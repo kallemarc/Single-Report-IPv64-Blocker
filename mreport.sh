@@ -9,72 +9,58 @@ API_KEY=""
 # Set Blocker ID
 BLOCKER_ID=""
 
-# Function to validate IP address
-function validate_ip() {
-    local ip="$1"
-    local IFS='.'
-    ip=($ip)
-    local octet_count=${#ip[@]}
-    
-    if [[ $octet_count -eq 4 ]]; then
-        for octet in "${ip[@]}"; do
-            if ! [[ "$octet" =~ ^[0-9]+$ ]] || ! ((octet >= 0 && octet <= 255)); then
-                return 1
-            fi
-        done
-        return 0
-    else
-        return 1
-    fi
+# Function to report IPs with retry on API limit failure
+report_ip_list_with_retry() {
+    local JSON_DATA="$1"
+    local MAX_RETRY_ATTEMPTS=3
+    local RETRY_COUNT=0
+
+    while [ "$RETRY_COUNT" -lt "$MAX_RETRY_ATTEMPTS" ]; do
+        RESPONSE=$(curl -X POST -H "Authorization: Bearer $API_KEY" \
+             -d "blocker_id=$BLOCKER_ID" \
+             -d "report_ip_list=$JSON_DATA" \
+             "$API_URL")
+
+        if [ "$?" -eq 0 ] && echo "$RESPONSE" | grep -q '"info":"success"'; then
+            echo "IPs reported successfully."
+            break
+        else
+            echo "Reporting IPs failed. Retrying in 10 seconds..."
+            sleep 10
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+        fi
+    done
 }
 
-# Input IP
-while true; do
-    read -p "Enter the poisoned IP: " REPORT_IP
-    if validate_ip "$REPORT_IP"; then
-        break
-    else
-        echo "Invalid input. Please try again."
-    fi
-done
+# Input IP addresses separated by commas
+read -p "Enter the poisoned IP addresses separated by commas: " IP_LIST
+IFS=',' read -ra IP_ARRAY <<< "$IP_LIST"
 
 # Input port
-while true; do
-    read -p "Enter the destination port (1-65535): " PORT
-    # Validate port input
-    if [[ "$PORT" =~ ^[0-9]+$ && "$PORT" -ge 1 && "$PORT" -le 65535 ]]; then
-        break
-    else
-        echo "Invalid port number. Please enter a valid port between 1 and 65535."
-    fi
-done
+read -p "Enter the destination port (1-65535): " PORT
 
 # Input category
 echo "Select a category:"
 echo "1: SSH, 2: HTTPs, 3: Mail, 4: FTP, 5: ICMP, 6: DoS"
 echo "7: DDoS, 8: Flooding, 9: Web, 10: Malware, 11: Bots"
 echo "12: TCP, 13: UDP"
-while true; do
-    read -p "Enter the category number: " CATEGORY
-    # Validate category input
-    if [[ "$CATEGORY" =~ ^[0-9]+$ && "$CATEGORY" -ge 1 && "$CATEGORY" -le 13 ]]; then
-        break
-    else
-        echo "Invalid category number. Please enter a valid category number between 1 and 13."
-    fi
-done
+read -p "Enter the category number: " CATEGORY
 
 # Input additional info
 read -p "Enter additional information (optional): " INFO
+
+# Construct the JSON payload
+declare -a REPORT_DATA
+for ip in "${IP_ARRAY[@]}"; do
+    REPORT_DATA+=("{\"ip\":\"$ip\",\"category\":\"$CATEGORY\",\"info\":\"$INFO\",\"port\":\"$PORT\"}")
+done
+JSON_PAYLOAD="{\"ip_list\":[$(IFS=,; echo "${REPORT_DATA[*]}")]}"
 
 # Send API request
 response=$(curl -X POST "$API_URL" \
      -H "Authorization: Bearer $API_KEY" \
      -d "blocker_id=$BLOCKER_ID" \
-     -d "report_ip=$REPORT_IP" \
-     -d "port=$PORT" \
-     -d "category=$CATEGORY" \
-     -d "info=$INFO" 2>&1)
+     -d "report_ip_list=$JSON_PAYLOAD" 2>&1)
 
 if [[ "$response" == *"Unauthorized"* ]]; then
     echo "Unauthorized. Please check your API key."
@@ -85,4 +71,4 @@ elif [[ "$response" == *"error"* ]]; then
     exit 1
 fi
 
-echo "Report sent successfully!"
+echo "Report(s) sent successfully!"
